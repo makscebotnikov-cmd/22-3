@@ -1,4 +1,4 @@
-# Домашнее задание к занятию 5. «Практическое применение Docker»
+# Домашнее задание к занятию 5. «Практическое применение Docker» — Чеботников М.Б.
 
 ### Инструкция к выполнению
 
@@ -9,6 +9,17 @@
 
 ---
 ## Примечание: Ознакомьтесь со схемой виртуального стенда [по ссылке](https://github.com/netology-code/shvirtd-example-python/blob/main/schema.pdf)
+
+---
+
+> **Мой fork:** https://github.com/makscebotnikov-cmd/shvirtd-example-python (fork от `netology-code/shvirtd-example-python`)
+>
+> Существующие файлы проекта не изменялись. Добавлены ровно 5 файлов:
+> [`Dockerfile.python`](https://github.com/makscebotnikov-cmd/shvirtd-example-python/blob/main/Dockerfile.python),
+> [`compose.yaml`](https://github.com/makscebotnikov-cmd/shvirtd-example-python/blob/main/compose.yaml),
+> [`.gitignore`](https://github.com/makscebotnikov-cmd/shvirtd-example-python/blob/main/.gitignore),
+> [`.dockerignore`](https://github.com/makscebotnikov-cmd/shvirtd-example-python/blob/main/.dockerignore),
+> bash-скрипт [`deploy.sh`](https://github.com/makscebotnikov-cmd/shvirtd-example-python/blob/main/deploy.sh).
 
 ---
 
@@ -24,7 +35,6 @@ See 'snap info docker' for additional versions.
 ```
 В случае наличия установленного в системе ```docker-compose``` - удалите его.  
 2. Убедитесь что у вас УСТАНОВЛЕН ```docker compose```(без тире) версии не менее v2.24.X, для это выполните команду ```docker compose version```  
-###  **Своё решение к задачам оформите в вашем GitHub репозитории!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!**
 
 ---
 
@@ -47,7 +57,35 @@ See 'snap info docker' for additional versions.
 ---
 
 ## Ответ
-https://github.com/makscebotnikov-cmd/22
+
+Fork: https://github.com/makscebotnikov-cmd/shvirtd-example-python
+
+`Dockerfile.python` — multistage-сборка: в первой стадии (`builder`) в отдельный venv `/opt/venv` ставятся зависимости из `requirements.txt`, во вторую стадию копируется только готовый venv и код (`COPY . .`), без кэша pip. Лишнее (`.git`, `.env`, документация, конфиги прокси, compose-файлы) отсекается `.dockerignore`.
+
+```dockerfile
+FROM python:3.12-slim AS builder
+WORKDIR /app
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+FROM python:3.12-slim
+WORKDIR /app
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+COPY . .
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5000"]
+```
+
+Клонирование своего fork и содержимое `Dockerfile.python`:
+
+![Dockerfile.python](screens/01.png)
+
+Проверка сборки `docker build -f Dockerfile.python -t shvirtd-web:local .` — видны обе стадии (`builder` и `stage-1`):
+
+![Сборка образа](screens/02.png)
+
 ---
 
 ## Задача 2 (*)
@@ -59,8 +97,8 @@ https://github.com/makscebotnikov-cmd/22
 ---
 
 ## Ответ
-<img width="1182" height="1185" alt="1" src="https://github.com/user-attachments/assets/ee41197a-9390-4307-be51-0acfb51d8642" />
 
+Задание необязательное (*), не выполнялось.
 
 ---
 
@@ -84,21 +122,66 @@ https://github.com/makscebotnikov-cmd/22
 
 ## Ответ
 
-<img width="828" height="704" alt="2" src="https://github.com/user-attachments/assets/326ebe25-2f18-4bb3-99c3-f54ede1e719b" />
+[`compose.yaml`](https://github.com/makscebotnikov-cmd/shvirtd-example-python/blob/main/compose.yaml) в моём fork:
 
+```yaml
+include:
+  - proxy.yaml   # reverse-proxy (haproxy), ingress-proxy (nginx) и сеть backend 172.20.0.0/24
+
+services:
+  db:
+    image: mysql:8
+    restart: on-failure
+    env_file:
+      - .env   # MYSQL_ROOT_PASSWORD, MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD
+    networks:
+      backend:
+        ipv4_address: 172.20.0.10
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    restart: always
+    environment:
+      DB_HOST: db
+      DB_USER: ${MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      DB_NAME: ${MYSQL_DATABASE}
+    networks:
+      backend:
+        ipv4_address: 172.20.0.5
+    depends_on:
+      db:
+        condition: service_healthy
+```
+
+- `web` собирается из `Dockerfile.python`, сеть `backend`, адрес `172.20.0.5`, `restart: always`; к БД подключается по сетевому имени сервиса `db`, логин/пароль/имя БД берутся из существующего `.env`.
+- `db` — `mysql:8`, сеть `backend`, адрес `172.20.0.10`, `restart: on-failure`; root-пароль, база, пользователь и пароль приложения — из `.env` (`env_file`). Healthcheck нужен, чтобы `web` стартовал только после готовности MySQL.
+- Сеть `backend` (bridge, 172.20.0.0/24) объявлена в `proxy.yaml` и подключается через `include`.
+
+Запуск проекта (`docker compose up -d --build`), все 4 контейнера работают, `db` — healthy:
+
+![docker compose up](screens/03.png)
+
+`curl -L http://127.0.0.1:8090` возвращает время и IP:
+
+![curl 8090](screens/04.png)
+
+SQL-запрос `show databases; use virtd; show tables; SELECT * from requests LIMIT 10;`:
+
+![SQL локально](screens/05.png)
+
+Остановка проекта:
+
+![docker compose down](screens/06.png)
 
 ---
-
-<img width="1301" height="428" alt="3" src="https://github.com/user-attachments/assets/aaabddd1-6233-4dcd-9fce-d0f3daeeebfb" />
-
-
----
-
-<img width="867" height="701" alt="4" src="https://github.com/user-attachments/assets/5f70923e-8776-4493-aa50-e913aa2eebf4" />
-
-
----
-
 
 ## Задача 4
 1. Запустите в Yandex Cloud ВМ (вам хватит 2 Гб Ram).
@@ -111,25 +194,54 @@ https://github.com/makscebotnikov-cmd/22
 
 ## Ответ
 
----
+**Fork:** https://github.com/makscebotnikov-cmd/shvirtd-example-python
 
-Скрипт: https://github.com/makscebotnikov-cmd/22-1/blob/main/README.md?plain=1
+**Скрипт:** [`deploy.sh`](https://github.com/makscebotnikov-cmd/shvirtd-example-python/blob/main/deploy.sh) — клонирует **мой fork** в `/opt/shvirtd-example-python` (или обновляет его, если он уже есть) и запускает проект целиком:
 
----
+```bash
+#!/bin/bash
+# Разворачивает проект из МОЕГО форка в /opt и запускает его целиком.
+# Использование:  sudo bash deploy.sh
+set -euo pipefail
 
-Форк: https://github.com/makscebotnikov-cmd/22-2
+REPO_URL="https://github.com/makscebotnikov-cmd/shvirtd-example-python.git"
+TARGET_DIR="/opt/shvirtd-example-python"
 
----
+if [ -d "$TARGET_DIR/.git" ]; then
+  echo ">>> Репозиторий уже есть, обновляю: $TARGET_DIR"
+  git -C "$TARGET_DIR" pull --ff-only
+else
+  echo ">>> Клонирую $REPO_URL в $TARGET_DIR"
+  git clone "$REPO_URL" "$TARGET_DIR"
+fi
 
-<img width="767" height="877" alt="5" src="https://github.com/user-attachments/assets/343c3eff-921c-4600-bc80-a42f58c97d83" />
+cd "$TARGET_DIR"
+echo ">>> Запускаю проект"
+docker compose up -d --build
 
+echo ">>> Состояние контейнеров"
+docker compose ps
+```
 
----
+ВМ в Yandex Cloud (`netology-hw5`, Ubuntu 24.04, 2 vCPU 20%, 2 ГБ RAM, прерываемая), подключение по ssh и установка Docker:
 
-Тут должен был быть скрин с вкладки http, и по началу у меня выдавало "OK" Япония, Казахстан и Гонк-Конг, но пару раз попрыгав по вкладам ушли в ошибку "Слишком много запросов", поэтому приложил скрин с первой страницы:
+![ВМ и Docker](screens/07.png)
 
-<img width="1002" height="908" alt="6" src="https://github.com/user-attachments/assets/2c8c3bcc-e851-4bcb-92c3-4d50ee6ef342" />
+Скрипт скачан на ВМ прямо из моего fork:
 
+![deploy.sh](screens/08.png)
+
+После `sudo bash deploy.sh`: в `/opt/shvirtd-example-python` лежит клон **моего** fork (`git remote -v`, последние коммиты — добавленные мной файлы), все контейнеры работают, приложение отвечает:
+
+![git remote, docker compose ps, curl](screens/09.png)
+
+Проверка `http://153.51.167.63:8090` через check-host.net — ответ 200 OK из разных стран:
+
+![check-host](screens/10.png)
+
+SQL-запрос на сервере — в таблице `requests` видны внешние IP узлов check-host (запросы прошли по цепочке Internet → Nginx → HAProxy → FastAPI → MySQL):
+
+![SQL на сервере](screens/11.png)
 
 ---
 
@@ -146,19 +258,23 @@ https://github.com/makscebotnikov-cmd/22
 
 ## Ответ
 
----
+Скачиваю образ `hashicorp/terraform:latest`:
 
-<img width="1930" height="1198" alt="7" src="https://github.com/user-attachments/assets/2134886f-fb6c-40cd-862b-44d7ed1e38c5" />
+![docker pull](screens/12.png)
 
+В `dive` видно, что бинарник добавляется последним слоем `COPY dist/linux/arm64/terraform /bin/terraform` (119 MB), в дереве файлов этого слоя — `/bin/terraform`:
 
----
+![dive](screens/13.png)
 
-<img width="1195" height="408" alt="8" src="https://github.com/user-attachments/assets/4e6bac61-4996-4657-8c71-762644100a45" />
+Сохраняю образ через `docker save` в tar-архив (формат OCI: `blobs/`, `index.json`, `manifest.json`), нахожу слой, содержащий `bin/terraform`, и извлекаю из него бинарник на локальную машину. `file` подтверждает, что это исполняемый файл terraform (ELF 64-bit, Go; образ для arm64, т.к. работаю на Mac с Apple Silicon):
 
+```bash
+docker save hashicorp/terraform:latest -o terraform.tar
+mkdir image && tar -xf terraform.tar -C image
+# слой, где лежит bin/terraform
+for f in $(find image -type f -size +1M); do tar -tf "$f" | grep -qx 'bin/terraform' && LAYER=$f; done
+tar -xf $LAYER -C . bin/terraform && cp bin/terraform ./terraform
+ls -lh ./terraform && file ./terraform
+```
 
----
-
-<img width="1398" height="423" alt="9" src="https://github.com/user-attachments/assets/9ac7f50d-1ff2-476b-8f6b-f4aea89fd9f9" />
-
-
----
+![docker save и извлечение](screens/14.png)
